@@ -3,12 +3,15 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v1'
+      - 'v1*'
   workflow_dispatch:
 
 permissions:
   contents: write
   actions: write
+
+env:
+  RELEASE_TAG: v1.0.0
 
 jobs:
   build:
@@ -119,7 +122,7 @@ jobs:
         cp ncat/ncat release/
         cp nping/nping release/
         cd release
-        zip -r nmap-android-${{ github.ref_name }}.zip nmap ncat nping
+        zip -r nmap-android-${{ env.RELEASE_TAG }}.zip nmap ncat nping
 
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
@@ -142,9 +145,10 @@ jobs:
     - name: Create GitHub Release
       uses: softprops/action-gh-release@v2
       with:
+        tag_name: ${{ env.RELEASE_TAG }}
         files: release/*
         draft: false
-        prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
+        prerelease: false
         generate_release_notes: true
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
