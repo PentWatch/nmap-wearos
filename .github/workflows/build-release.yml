@@ -68,8 +68,11 @@ jobs:
         make ssl crypto
         cd ../..
         mkdir -p boringssl/lib
-        ln -sf boringssl/build/libssl.a boringssl/lib/
-        ln -sf boringssl/build/libcrypto.a boringssl/lib/
+        # Copiar las librerías estáticas con los nombres correctos
+        cp boringssl/build/libssl.a boringssl/lib/libssl.a
+        cp boringssl/build/libcrypto.a boringssl/lib/libcrypto.a
+        # Verificar que existen
+        ls -la boringssl/lib/
 
     - name: Build libpcap
       run: |
