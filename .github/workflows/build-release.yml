@@ -1,0 +1,151 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v1'  # Trigger on version tags like v1.0, v2.3.1, etc.
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          make \
+          gcc \
+          clang \
+          autoconf \
+          automake \
+          libtool \
+          pkg-config \
+          cmake \
+          python3 \
+          wget \
+          unzip
+
+    - name: Install Android NDK r27
+      run: |
+        cd $HOME
+        wget -q https://dl.google.com/android/repository/android-ndk-r27b-linux.zip
+        unzip -q android-ndk-r27b-linux.zip
+        echo "NDK_HOME=$HOME/android-ndk-r27b" >> $GITHUB_ENV
+        echo "TOOLCHAIN=$HOME/android-ndk-r27b/toolchains/llvm/prebuilt/linux-x86_64" >> $GITHUB_ENV
+
+    - name: Set up toolchain
+      run: |
+        export PATH=$TOOLCHAIN/bin:$PATH
+        echo "PATH=$TOOLCHAIN/bin:$PATH" >> $GITHUB_ENV
+        
+        # Export cross-compile tools for aarch64 Android 24
+        echo "CC=aarch64-linux-android24-clang" >> $GITHUB_ENV
+        echo "CXX=aarch64-linux-android24-clang++" >> $GITHUB_ENV
+        echo "AR=llvm-ar" >> $GITHUB_ENV
+        echo "RANLIB=llvm-ranlib" >> $GITHUB_ENV
+
+    - name: Build BoringSSL
+      run: |
+        git clone https://github.com/google/boringssl.git
+        cd boringssl
+        mkdir -p build && cd build
+        cmake -DCMAKE_TOOLCHAIN_FILE=$NDK_HOME/build/cmake/android.toolchain.cmake \
+              -DANDROID_ABI=arm64-v8a \
+              -DANDROID_PLATFORM=android-24 \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_INSTALL_PREFIX=../install \
+              -DBUILD_SHARED_LIBS=OFF \
+              -DCMAKE_CXX_STANDARD=17 ..
+        make ssl crypto
+        cd ../..
+        mkdir -p boringssl/lib
+        ln -sf boringssl/build/libssl.a boringssl/lib/
+        ln -sf boringssl/build/libcrypto.a boringssl/lib/
+
+    - name: Build libpcap
+      run: |
+        cd libpcap
+        ./configure --host=aarch64-linux-android CC=$CC AR=$AR RANLIB=$RANLIB --without-libnl
+        make clean && make
+        cd ..
+
+    - name: Build libpcre2
+      run: |
+        cd libpcre
+        ./configure --host=aarch64-linux-android CC=$CC AR=$AR RANLIB=$RANLIB --disable-shared --enable-static
+        make clean && make
+        cd ..
+
+    - name: Configure Nmap
+      run: |
+        export CPPFLAGS="-I$PWD/libpcap -I$PWD/libpcre/src -I$PWD/boringssl/include"
+        export LDFLAGS="-L$PWD/libpcap -L$PWD/libpcre/.libs -L$PWD/boringssl/lib"
+        
+        ./configure \
+            --host=aarch64-linux-android \
+            --with-libpcap=included \
+            --with-libpcre=included \
+            --with-openssl=$PWD/boringssl \
+            --disable-zenmap \
+            --disable-nmap-update \
+            --without-liblua \
+            --without-libssh2 \
+            CC=$CC \
+            CXX=$CXX \
+            AR=$AR \
+            RANLIB=$RANLIB \
+            CPPFLAGS="$CPPFLAGS" \
+            LDFLAGS="$LDFLAGS" \
+            ac_cv_lib_crypto_BIO_int_ctrl=yes \
+            ac_cv_lib_ssl_SSL_new=yes \
+            ac_cv_func_EVP_sha256=yes
+
+    - name: Build Nmap
+      run: |
+        make -j$(nproc)
+
+    - name: Prepare release binaries
+      run: |
+        mkdir -p release
+        cp nmap release/
+        cp ncat/ncat release/
+        cp nping/nping release/
+        
+        # Create a zip with all binaries
+        cd release
+        zip -r nmap-android-${{ github.ref_name }}.zip nmap ncat nping
+
+    - name: Upload build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: nmap-android-binaries
+        path: release/
+        retention-days: 30
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Download build artifacts
+      uses: actions/download-artifact@v4
+      with:
+        name: nmap-android-binaries
+        path: release/
+
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v2
+      with:
+        files: release/*
+        draft: false
+        prerelease: ${{ contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') || contains(github.ref_name, 'rc') }}
+        generate_release_notes: true
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
