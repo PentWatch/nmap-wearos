@@ -3,8 +3,8 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v1*'  # Trigger on version tags like v1.0, v1.2.3, etc.
-  workflow_dispatch:  # Allow manual trigger from Actions tab
+      - 'v1*'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -46,8 +46,6 @@ jobs:
       run: |
         export PATH=$TOOLCHAIN/bin:$PATH
         echo "PATH=$TOOLCHAIN/bin:$PATH" >> $GITHUB_ENV
-        
-        # Export cross-compile tools for aarch64 Android 24
         echo "CC=aarch64-linux-android24-clang" >> $GITHUB_ENV
         echo "CXX=aarch64-linux-android24-clang++" >> $GITHUB_ENV
         echo "AR=llvm-ar" >> $GITHUB_ENV
@@ -68,10 +66,8 @@ jobs:
         make ssl crypto
         cd ../..
         mkdir -p boringssl/lib
-        # Copiar las librerías estáticas con los nombres correctos
         cp boringssl/build/libssl.a boringssl/lib/libssl.a
         cp boringssl/build/libcrypto.a boringssl/lib/libcrypto.a
-        # Verificar que existen
         ls -la boringssl/lib/
 
     - name: Build libpcap
@@ -91,7 +87,7 @@ jobs:
     - name: Configure Nmap
       run: |
         export CPPFLAGS="-I$PWD/libpcap -I$PWD/libpcre/src -I$PWD/boringssl/include"
-        export LDFLAGS="-L$PWD/libpcap -L$PWD/libpcre/.libs -L$PWD/boringssl/lib"
+        export LDFLAGS="-L$PWD/libpcap -L$PWD/libpcre/.libs -L$PWD/boringssl/lib -lc++"
         
         ./configure \
             --host=aarch64-linux-android \
@@ -122,8 +118,6 @@ jobs:
         cp nmap release/
         cp ncat/ncat release/
         cp nping/nping release/
-        
-        # Create a zip with all binaries
         cd release
         zip -r nmap-android-${{ github.ref_name }}.zip nmap ncat nping
 
