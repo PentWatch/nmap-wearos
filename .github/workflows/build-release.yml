@@ -16,7 +16,7 @@ env:
 
 jobs:
   build:
-    name: Build Android binaries
+    name: Build Android Nmap
     runs-on: ubuntu-latest
 
     steps:
@@ -47,6 +47,22 @@ jobs:
             file \
             binutils \
             zip
+
+      - name: Check source URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if grep -RInE \
+            '\]\(https?://|\[https?://' \
+            --exclude-dir=.git \
+            .; then
+            echo
+            echo "ERROR: Markdown-style URLs were found in the source tree."
+            echo "Use plain URLs instead, for example:"
+            echo "https://nmap.org/nping/"
+            exit 1
+          fi
 
       - name: Install Android NDK
         shell: bash
@@ -82,14 +98,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          command -v "$CC"
-          command -v "$CXX"
-          command -v "$AR"
-          command -v "$RANLIB"
-          command -v "$STRIP"
-
           "$CC" --version
           "$CXX" --version
+          "$AR" --version
+          "$RANLIB" --version
 
       - name: Build BoringSSL
         shell: bash
@@ -105,7 +117,6 @@ jobs:
             -DANDROID_ABI="$ANDROID_ABI" \
             -DANDROID_PLATFORM="android-${ANDROID_API}" \
             -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_INSTALL_PREFIX="$PWD/boringssl/install" \
             -DBUILD_SHARED_LIBS=OFF \
             -DCMAKE_CXX_STANDARD=17 \
             -DCMAKE_CXX_STANDARD_REQUIRED=ON
@@ -113,8 +124,6 @@ jobs:
           cmake --build boringssl/build \
             --target ssl crypto \
             --parallel "$(nproc)"
-
-          echo "Searching for BoringSSL static libraries..."
 
           SSL_LIB="$(
             find "$PWD/boringssl/build" \
@@ -130,14 +139,8 @@ jobs:
               -print -quit
           )"
 
-          if [[ -z "$SSL_LIB" ]]; then
-            echo "ERROR: libssl.a was not found"
-            find "$PWD/boringssl/build" -type f -name "*.a" -print
-            exit 1
-          fi
-
-          if [[ -z "$CRYPTO_LIB" ]]; then
-            echo "ERROR: libcrypto.a was not found"
+          if [[ -z "$SSL_LIB" || -z "$CRYPTO_LIB" ]]; then
+            echo "ERROR: BoringSSL static libraries were not found"
             find "$PWD/boringssl/build" -type f -name "*.a" -print
             exit 1
           fi
@@ -147,7 +150,6 @@ jobs:
           cp "$SSL_LIB" boringssl/lib/libssl.a
           cp "$CRYPTO_LIB" boringssl/lib/libcrypto.a
 
-          echo "BoringSSL libraries prepared:"
           ls -lh boringssl/lib
 
       - name: Build libpcap
@@ -186,14 +188,25 @@ jobs:
 
           cd ..
 
+      - name: Clean Nmap build files
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          make distclean 2>/dev/null || true
+
+          find . \
+            -name "*.o" \
+            -o -name "*.lo" \
+            -o -name "*.la" \
+            -o -name "*.lai" \
+            | xargs -r rm -f
+
       - name: Configure Nmap
         shell: bash
         run: |
           set -euo pipefail
 
-          # These flags are intentionally limited to the Nmap configure step.
-          # Do not export PCRE2-specific library paths globally, because Nmap
-          # builds its bundled PCRE2 internally.
           export CPPFLAGS="\
           -I$PWD/libpcap \
           -I$PWD/boringssl/include"
@@ -210,11 +223,12 @@ jobs:
             --with-libpcre=included \
             --with-openssl="$PWD/boringssl" \
             --disable-zenmap \
+            --disable-ncat \
+            --disable-nping \
+            --disable-ndiff \
             --disable-nmap-update \
             --without-liblua \
             --without-libssh2 \
-            --disable-ncat \
-            --disable-nping \
             CC="$CC" \
             CXX="$CXX" \
             AR="$AR" \
@@ -276,8 +290,6 @@ jobs:
           cp nmap release/nmap
           chmod 755 release/nmap
 
-          file release/nmap
-
           cd release
 
           zip -9 \
@@ -289,6 +301,7 @@ jobs:
             "nmap-android-${RELEASE_TAG}.zip" \
             > SHA256SUMS
 
+          file nmap
           ls -lh
 
       - name: Upload build artifacts
