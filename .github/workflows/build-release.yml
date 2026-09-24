@@ -24,8 +24,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install build dependencies
+        shell: bash
         run: |
+          set -euo pipefail
+
           sudo apt-get update
+
           sudo apt-get install -y \
             make \
             gcc \
@@ -36,6 +40,7 @@ jobs:
             libtool \
             pkg-config \
             cmake \
+            ninja-build \
             python3 \
             wget \
             unzip \
@@ -45,6 +50,8 @@ jobs:
       - name: Install Android NDK r27b
         shell: bash
         run: |
+          set -euo pipefail
+
           cd "$HOME"
 
           wget -q \
@@ -58,6 +65,8 @@ jobs:
       - name: Configure Android toolchain
         shell: bash
         run: |
+          set -euo pipefail
+
           echo "PATH=$TOOLCHAIN/bin:$PATH" >> "$GITHUB_ENV"
 
           echo "CC=$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang" >> "$GITHUB_ENV"
@@ -66,9 +75,20 @@ jobs:
           echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> "$GITHUB_ENV"
           echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> "$GITHUB_ENV"
 
+      - name: Show toolchain versions
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          "$CC" --version
+          "$CXX" --version
+          cmake --version
+
       - name: Build BoringSSL
         shell: bash
         run: |
+          set -euo pipefail
+
           git clone --depth 1 https://github.com/google/boringssl.git
 
           cmake \
@@ -80,22 +100,53 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_INSTALL_PREFIX="$PWD/boringssl/install" \
             -DBUILD_SHARED_LIBS=OFF \
-            -DCMAKE_CXX_STANDARD=17
+            -DCMAKE_CXX_STANDARD=17 \
+            -DCMAKE_CXX_STANDARD_REQUIRED=ON
 
           cmake --build boringssl/build \
             --target ssl crypto \
             --parallel "$(nproc)"
 
+          echo "Generated BoringSSL files:"
+
+          find boringssl/build \
+            -type f \
+            \( -name "libssl.a" -o -name "libcrypto.a" \) \
+            -print
+
+          SSL_LIB="$(find "$PWD/boringssl/build" \
+            -type f \
+            -name "libssl.a" \
+            -print -quit)"
+
+          CRYPTO_LIB="$(find "$PWD/boringssl/build" \
+            -type f \
+            -name "libcrypto.a" \
+            -print -quit)"
+
+          if [[ -z "$SSL_LIB" ]]; then
+            echo "ERROR: libssl.a was not found"
+            exit 1
+          fi
+
+          if [[ -z "$CRYPTO_LIB" ]]; then
+            echo "ERROR: libcrypto.a was not found"
+            exit 1
+          fi
+
           mkdir -p boringssl/lib
 
-          cp boringssl/build/ssl/libssl.a boringssl/lib/libssl.a
-          cp boringssl/build/crypto/libcrypto.a boringssl/lib/libcrypto.a
+          cp "$SSL_LIB" boringssl/lib/libssl.a
+          cp "$CRYPTO_LIB" boringssl/lib/libcrypto.a
 
+          echo "Prepared BoringSSL libraries:"
           ls -lh boringssl/lib
 
       - name: Build libpcap
         shell: bash
         run: |
+          set -euo pipefail
+
           cd libpcap
 
           ./configure \
@@ -110,11 +161,19 @@ jobs:
           make clean || true
           make -j"$(nproc)"
 
+          if [[ ! -f ".libs/libpcap.a" ]]; then
+            echo "ERROR: libpcap.a was not found"
+            find . -name "libpcap.a" -print
+            exit 1
+          fi
+
           cd ..
 
-      - name: Build libpcre2
+      - name: Build PCRE
         shell: bash
         run: |
+          set -euo pipefail
+
           cd libpcre
 
           ./configure \
@@ -128,22 +187,31 @@ jobs:
           make clean || true
           make -j"$(nproc)"
 
+          if [[ ! -f ".libs/libpcre.a" ]]; then
+            echo "ERROR: libpcre.a was not found"
+            find . -name "libpcre.a" -print
+            exit 1
+          fi
+
           cd ..
 
       - name: Configure Nmap
         shell: bash
         run: |
+          set -euo pipefail
+
           export CPPFLAGS="\
           -I$PWD/libpcap \
+          -I$PWD/libpcre \
           -I$PWD/libpcre/src \
           -I$PWD/boringssl/include"
 
-          # Importante:
-          # - No usar -lc++, porque crea una dependencia de
-          #   libc++_shared.so.
-          # - -static-libstdc++ enlaza el runtime C++ estáticamente.
+          # Do not use -lc++.
+          #
+          # -static-libstdc++ links the C++ runtime statically
+          # and prevents a dependency on libc++_shared.so.
           export LDFLAGS="\
-          -L$PWD/libpcap \
+          -L$PWD/libpcap/.libs \
           -L$PWD/libpcre/.libs \
           -L$PWD/boringssl/lib \
           -static-libstdc++"
@@ -170,16 +238,31 @@ jobs:
       - name: Build Nmap
         shell: bash
         run: |
+          set -euo pipefail
+
           make -j"$(nproc)" V=1
 
-      - name: Verify binaries
+      - name: Verify generated binaries
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
-          for binary in nmap ncat/ncat nping/nping; do
+          binaries=(
+            "nmap"
+            "ncat/ncat"
+            "nping/nping"
+          )
+
+          for binary in "${binaries[@]}"; do
             echo
-            echo "========== $binary =========="
+            echo "========================================"
+            echo "Verifying: $binary"
+            echo "========================================"
+
+            if [[ ! -f "$binary" ]]; then
+              echo "ERROR: $binary does not exist"
+              exit 1
+            fi
 
             file "$binary"
 
@@ -193,12 +276,14 @@ jobs:
 
             echo "--- Architecture ---"
             "$TOOLCHAIN/bin/llvm-readelf" -h "$binary" | \
-              grep -E "Class:|Machine:|OS/ABI:"
+              grep -E "Class:|Machine:|OS/ABI:" || true
           done
 
       - name: Strip binaries
         shell: bash
         run: |
+          set -euo pipefail
+
           "$STRIP" nmap
           "$STRIP" ncat/ncat
           "$STRIP" nping/nping
@@ -206,14 +291,14 @@ jobs:
       - name: Prepare release package
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           rm -rf release
           mkdir -p release
 
-          cp nmap release/
-          cp ncat/ncat release/
-          cp nping/nping release/
+          cp nmap release/nmap
+          cp ncat/ncat release/ncat
+          cp nping/nping release/nping
 
           chmod 755 \
             release/nmap \
@@ -239,6 +324,8 @@ jobs:
             nping \
             "nmap-android-${RELEASE_TAG}.zip" \
             > SHA256SUMS
+
+          ls -lh
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
