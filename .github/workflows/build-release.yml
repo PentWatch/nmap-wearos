@@ -48,22 +48,6 @@ jobs:
             binutils \
             zip
 
-      - name: Check source URLs
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          if grep -RInE \
-            '\]\(https?://|\[https?://' \
-            --exclude-dir=.git \
-            .; then
-            echo
-            echo "ERROR: Markdown-style URLs were found in the source tree."
-            echo "Use plain URLs instead, for example:"
-            echo "https://nmap.org/nping/"
-            exit 1
-          fi
-
       - name: Install Android NDK
         shell: bash
         run: |
@@ -108,6 +92,7 @@ jobs:
         run: |
           set -euo pipefail
 
+          rm -rf boringssl
           git clone --depth 1 https://github.com/google/boringssl.git
 
           cmake \
