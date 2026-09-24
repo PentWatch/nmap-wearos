@@ -191,7 +191,7 @@ jobs:
 
           cd ..
 
-      - name: Build PCRE
+      - name: Build PCRE2
         shell: bash
         run: |
           set -euo pipefail
@@ -203,30 +203,34 @@ jobs:
 
           ./configure \
             --host=aarch64-linux-android \
-            --enable-static \
             --disable-shared \
+            --enable-static \
+            --disable-pcre2-16 \
+            --disable-pcre2-32 \
+            --disable-jit \
+            --disable-unicode \
             CC="$CC" \
             AR="$AR" \
             RANLIB="$RANLIB"
 
           make -j"$(nproc)"
 
-          echo "Searching for libpcre.a..."
+          echo "Searching for PCRE2 static libraries..."
 
-          LIBPCRE_A="$(
+          LIBPCRE2_A="$(
             find "$PWD" \
               -type f \
-              -name "libpcre.a" \
+              -name "libpcre2-8.a" \
               -print -quit
           )"
 
-          if [[ -z "$LIBPCRE_A" ]]; then
-            echo "ERROR: libpcre.a was not found"
+          if [[ -z "$LIBPCRE2_A" ]]; then
+            echo "ERROR: libpcre2-8.a was not found"
             find "$PWD" -type f -name "*.a" -print
             exit 1
           fi
 
-          echo "Found libpcre: $LIBPCRE_A"
+          echo "Found PCRE2: $LIBPCRE2_A"
 
           cd ..
 
@@ -242,10 +246,10 @@ jobs:
               -print -quit
           )"
 
-          LIBPCRE_A="$(
+          LIBPCRE2_A="$(
             find "$PWD/libpcre" \
               -type f \
-              -name "libpcre.a" \
+              -name "libpcre2-8.a" \
               -print -quit
           )"
 
@@ -254,16 +258,16 @@ jobs:
             exit 1
           fi
 
-          if [[ -z "$LIBPCRE_A" ]]; then
-            echo "ERROR: libpcre.a was not found"
+          if [[ -z "$LIBPCRE2_A" ]]; then
+            echo "ERROR: libpcre2-8.a was not found"
             exit 1
           fi
 
           echo "LIBPCAP_DIR=$(dirname "$LIBPCAP_A")" >> "$GITHUB_ENV"
-          echo "LIBPCRE_DIR=$(dirname "$LIBPCRE_A")" >> "$GITHUB_ENV"
+          echo "LIBPCRE2_DIR=$(dirname "$LIBPCRE2_A")" >> "$GITHUB_ENV"
 
           echo "LIBPCAP_DIR=$(dirname "$LIBPCAP_A")"
-          echo "LIBPCRE_DIR=$(dirname "$LIBPCRE_A")"
+          echo "LIBPCRE2_DIR=$(dirname "$LIBPCRE2_A")"
 
       - name: Configure Nmap
         shell: bash
@@ -274,18 +278,27 @@ jobs:
           -I$PWD/libpcap \
           -I$PWD/libpcre \
           -I$PWD/libpcre/src \
-          -I$PWD/boringssl/include"
+          -I$PWD/boringssl/include \
+          -DPCRE2_STATIC \
+          -DPCRE2_CODE_UNIT_WIDTH=8"
 
           export LDFLAGS="\
           -L$LIBPCAP_DIR \
-          -L$LIBPCRE_DIR \
+          -L$LIBPCRE2_DIR \
           -L$PWD/boringssl/lib \
           -static-libstdc++"
 
+          export LIBS="\
+          -lpcre2-8 \
+          -lssl \
+          -lcrypto \
+          -lz \
+          -ldl"
+
           ./configure \
             --host=aarch64-linux-android \
-            --with-libpcap="$LIBPCAP_DIR" \
-            --with-libpcre="$LIBPCRE_DIR" \
+            --with-libpcap=included \
+            --with-libpcre=included \
             --with-openssl="$PWD/boringssl" \
             --disable-zenmap \
             --disable-nmap-update \
@@ -297,6 +310,7 @@ jobs:
             RANLIB="$RANLIB" \
             CPPFLAGS="$CPPFLAGS" \
             LDFLAGS="$LDFLAGS" \
+            LIBS="$LIBS" \
             ac_cv_lib_crypto_BIO_int_ctrl=yes \
             ac_cv_lib_ssl_SSL_new=yes \
             ac_cv_func_EVP_sha256=yes
