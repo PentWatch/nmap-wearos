@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v1*'
+      - "v1*"
   workflow_dispatch:
 
 permissions:
@@ -12,143 +12,259 @@ permissions:
 
 env:
   RELEASE_TAG: v1.0.0
+  ANDROID_API: "24"
+  ANDROID_ABI: arm64-v8a
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name: Set up build dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          make \
-          gcc \
-          clang \
-          autoconf \
-          automake \
-          libtool \
-          pkg-config \
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            make \
+            gcc \
+            g++ \
+            clang \
+            autoconf \
+            automake \
+            libtool \
+            pkg-config \
+            cmake \
+            python3 \
+            wget \
+            unzip \
+            file \
+            binutils
+
+      - name: Install Android NDK r27b
+        shell: bash
+        run: |
+          cd "$HOME"
+
+          wget -q \
+            https://dl.google.com/android/repository/android-ndk-r27b-linux.zip
+
+          unzip -q android-ndk-r27b-linux.zip
+
+          echo "NDK_HOME=$HOME/android-ndk-r27b" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN=$HOME/android-ndk-r27b/toolchains/llvm/prebuilt/linux-x86_64" >> "$GITHUB_ENV"
+
+      - name: Configure Android toolchain
+        shell: bash
+        run: |
+          echo "PATH=$TOOLCHAIN/bin:$PATH" >> "$GITHUB_ENV"
+
+          echo "CC=$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          echo "CXX=$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang++" >> "$GITHUB_ENV"
+          echo "AR=$TOOLCHAIN/bin/llvm-ar" >> "$GITHUB_ENV"
+          echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> "$GITHUB_ENV"
+          echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> "$GITHUB_ENV"
+
+      - name: Build BoringSSL
+        shell: bash
+        run: |
+          git clone --depth 1 https://github.com/google/boringssl.git
+
           cmake \
-          python3 \
-          wget \
-          unzip
+            -S boringssl \
+            -B boringssl/build \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK_HOME/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI="$ANDROID_ABI" \
+            -DANDROID_PLATFORM="android-${ANDROID_API}" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_PREFIX="$PWD/boringssl/install" \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DCMAKE_CXX_STANDARD=17
 
-    - name: Install Android NDK r27
-      run: |
-        cd $HOME
-        wget -q https://dl.google.com/android/repository/android-ndk-r27b-linux.zip
-        unzip -q android-ndk-r27b-linux.zip
-        echo "NDK_HOME=$HOME/android-ndk-r27b" >> $GITHUB_ENV
-        echo "TOOLCHAIN=$HOME/android-ndk-r27b/toolchains/llvm/prebuilt/linux-x86_64" >> $GITHUB_ENV
+          cmake --build boringssl/build \
+            --target ssl crypto \
+            --parallel "$(nproc)"
 
-    - name: Set up toolchain
-      run: |
-        export PATH=$TOOLCHAIN/bin:$PATH
-        echo "PATH=$TOOLCHAIN/bin:$PATH" >> $GITHUB_ENV
-        echo "CC=aarch64-linux-android24-clang" >> $GITHUB_ENV
-        echo "CXX=aarch64-linux-android24-clang++" >> $GITHUB_ENV
-        echo "AR=llvm-ar" >> $GITHUB_ENV
-        echo "RANLIB=llvm-ranlib" >> $GITHUB_ENV
+          mkdir -p boringssl/lib
 
-    - name: Build BoringSSL
-      run: |
-        git clone https://github.com/google/boringssl.git
-        cd boringssl
-        mkdir -p build && cd build
-        cmake -DCMAKE_TOOLCHAIN_FILE=$NDK_HOME/build/cmake/android.toolchain.cmake \
-              -DANDROID_ABI=arm64-v8a \
-              -DANDROID_PLATFORM=android-24 \
-              -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_INSTALL_PREFIX=../install \
-              -DBUILD_SHARED_LIBS=OFF \
-              -DCMAKE_CXX_STANDARD=17 ..
-        make ssl crypto
-        cd ../..
-        mkdir -p boringssl/lib
-        cp boringssl/build/libssl.a boringssl/lib/libssl.a
-        cp boringssl/build/libcrypto.a boringssl/lib/libcrypto.a
-        ls -la boringssl/lib/
+          cp boringssl/build/ssl/libssl.a boringssl/lib/libssl.a
+          cp boringssl/build/crypto/libcrypto.a boringssl/lib/libcrypto.a
 
-    - name: Build libpcap
-      run: |
-        cd libpcap
-        ./configure --host=aarch64-linux-android CC=$CC AR=$AR RANLIB=$RANLIB --without-libnl
-        make clean && make
-        cd ..
+          ls -lh boringssl/lib
 
-    - name: Build libpcre2
-      run: |
-        cd libpcre
-        ./configure --host=aarch64-linux-android CC=$CC AR=$AR RANLIB=$RANLIB --disable-shared --enable-static
-        make clean && make
-        cd ..
+      - name: Build libpcap
+        shell: bash
+        run: |
+          cd libpcap
 
-    - name: Configure Nmap
-      run: |
-        export CPPFLAGS="-I$PWD/libpcap -I$PWD/libpcre/src -I$PWD/boringssl/include"
-        export LDFLAGS="-L$PWD/libpcap -L$PWD/libpcre/.libs -L$PWD/boringssl/lib -lc++"
-        
-        ./configure \
+          ./configure \
+            --host=aarch64-linux-android \
+            --enable-static \
+            --disable-shared \
+            --without-libnl \
+            CC="$CC" \
+            AR="$AR" \
+            RANLIB="$RANLIB"
+
+          make clean || true
+          make -j"$(nproc)"
+
+          cd ..
+
+      - name: Build libpcre2
+        shell: bash
+        run: |
+          cd libpcre
+
+          ./configure \
+            --host=aarch64-linux-android \
+            --enable-static \
+            --disable-shared \
+            CC="$CC" \
+            AR="$AR" \
+            RANLIB="$RANLIB"
+
+          make clean || true
+          make -j"$(nproc)"
+
+          cd ..
+
+      - name: Configure Nmap
+        shell: bash
+        run: |
+          export CPPFLAGS="\
+          -I$PWD/libpcap \
+          -I$PWD/libpcre/src \
+          -I$PWD/boringssl/include"
+
+          # Importante:
+          # - No usar -lc++, porque crea una dependencia de
+          #   libc++_shared.so.
+          # - -static-libstdc++ enlaza el runtime C++ estáticamente.
+          export LDFLAGS="\
+          -L$PWD/libpcap \
+          -L$PWD/libpcre/.libs \
+          -L$PWD/boringssl/lib \
+          -static-libstdc++"
+
+          ./configure \
             --host=aarch64-linux-android \
             --with-libpcap=included \
             --with-libpcre=included \
-            --with-openssl=$PWD/boringssl \
+            --with-openssl="$PWD/boringssl" \
             --disable-zenmap \
             --disable-nmap-update \
             --without-liblua \
             --without-libssh2 \
-            CC=$CC \
-            CXX=$CXX \
-            AR=$AR \
-            RANLIB=$RANLIB \
+            CC="$CC" \
+            CXX="$CXX" \
+            AR="$AR" \
+            RANLIB="$RANLIB" \
             CPPFLAGS="$CPPFLAGS" \
             LDFLAGS="$LDFLAGS" \
             ac_cv_lib_crypto_BIO_int_ctrl=yes \
             ac_cv_lib_ssl_SSL_new=yes \
             ac_cv_func_EVP_sha256=yes
 
-    - name: Build Nmap
-      run: |
-        make -j$(nproc)
+      - name: Build Nmap
+        shell: bash
+        run: |
+          make -j"$(nproc)" V=1
 
-    - name: Prepare release binaries
-      run: |
-        mkdir -p release
-        cp nmap release/
-        cp ncat/ncat release/
-        cp nping/nping release/
-        cd release
-        zip -r nmap-android-${{ env.RELEASE_TAG }}.zip nmap ncat nping
+      - name: Verify binaries
+        shell: bash
+        run: |
+          set -e
 
-    - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: nmap-android-binaries
-        path: release/
-        retention-days: 30
+          for binary in nmap ncat/ncat nping/nping; do
+            echo
+            echo "========== $binary =========="
+
+            file "$binary"
+
+            echo "--- Dynamic dependencies ---"
+            readelf -d "$binary" | grep NEEDED || true
+
+            if readelf -d "$binary" | grep -q "libc++_shared.so"; then
+              echo "ERROR: $binary still depends on libc++_shared.so"
+              exit 1
+            fi
+
+            echo "--- Architecture ---"
+            "$TOOLCHAIN/bin/llvm-readelf" -h "$binary" | \
+              grep -E "Class:|Machine:|OS/ABI:"
+          done
+
+      - name: Strip binaries
+        shell: bash
+        run: |
+          "$STRIP" nmap
+          "$STRIP" ncat/ncat
+          "$STRIP" nping/nping
+
+      - name: Prepare release package
+        shell: bash
+        run: |
+          set -e
+
+          rm -rf release
+          mkdir -p release
+
+          cp nmap release/
+          cp ncat/ncat release/
+          cp nping/nping release/
+
+          chmod 755 \
+            release/nmap \
+            release/ncat \
+            release/nping
+
+          file \
+            release/nmap \
+            release/ncat \
+            release/nping
+
+          cd release
+
+          zip -9 \
+            "nmap-android-${RELEASE_TAG}.zip" \
+            nmap \
+            ncat \
+            nping
+
+          sha256sum \
+            nmap \
+            ncat \
+            nping \
+            "nmap-android-${RELEASE_TAG}.zip" \
+            > SHA256SUMS
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: nmap-android-binaries
+          path: release/
+          retention-days: 30
 
   release:
     needs: build
     runs-on: ubuntu-latest
-    
-    steps:
-    - name: Download build artifacts
-      uses: actions/download-artifact@v4
-      with:
-        name: nmap-android-binaries
-        path: release/
 
-    - name: Create GitHub Release
-      uses: softprops/action-gh-release@v2
-      with:
-        tag_name: ${{ env.RELEASE_TAG }}
-        files: release/*
-        draft: false
-        prerelease: false
-        generate_release_notes: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: nmap-android-binaries
+          path: release/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: release/*
+          draft: false
+          prerelease: false
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
