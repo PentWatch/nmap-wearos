@@ -116,11 +116,6 @@ jobs:
 
           echo "Searching for BoringSSL static libraries..."
 
-          find "$PWD/boringssl/build" \
-            -type f \
-            \( -name "libssl.a" -o -name "libcrypto.a" \) \
-            -print
-
           SSL_LIB="$(
             find "$PWD/boringssl/build" \
               -type f \
@@ -137,11 +132,13 @@ jobs:
 
           if [[ -z "$SSL_LIB" ]]; then
             echo "ERROR: libssl.a was not found"
+            find "$PWD/boringssl/build" -type f -name "*.a" -print
             exit 1
           fi
 
           if [[ -z "$CRYPTO_LIB" ]]; then
             echo "ERROR: libcrypto.a was not found"
+            find "$PWD/boringssl/build" -type f -name "*.a" -print
             exit 1
           fi
 
@@ -172,8 +169,6 @@ jobs:
 
           make -j"$(nproc)"
 
-          echo "Searching for libpcap.a..."
-
           LIBPCAP_A="$(
             find "$PWD" \
               -type f \
@@ -191,109 +186,23 @@ jobs:
 
           cd ..
 
-      - name: Build PCRE2
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          cd libpcre
-
-          make distclean 2>/dev/null || true
-          rm -f config.cache
-
-          ./configure \
-            --host=aarch64-linux-android \
-            --disable-shared \
-            --enable-static \
-            --disable-pcre2-16 \
-            --disable-pcre2-32 \
-            --disable-jit \
-            --disable-unicode \
-            CC="$CC" \
-            AR="$AR" \
-            RANLIB="$RANLIB"
-
-          make -j"$(nproc)"
-
-          echo "Searching for PCRE2 static libraries..."
-
-          LIBPCRE2_A="$(
-            find "$PWD" \
-              -type f \
-              -name "libpcre2-8.a" \
-              -print -quit
-          )"
-
-          if [[ -z "$LIBPCRE2_A" ]]; then
-            echo "ERROR: libpcre2-8.a was not found"
-            find "$PWD" -type f -name "*.a" -print
-            exit 1
-          fi
-
-          echo "Found PCRE2: $LIBPCRE2_A"
-
-          cd ..
-
-      - name: Prepare dependency paths
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          LIBPCAP_A="$(
-            find "$PWD/libpcap" \
-              -type f \
-              -name "libpcap.a" \
-              -print -quit
-          )"
-
-          LIBPCRE2_A="$(
-            find "$PWD/libpcre" \
-              -type f \
-              -name "libpcre2-8.a" \
-              -print -quit
-          )"
-
-          if [[ -z "$LIBPCAP_A" ]]; then
-            echo "ERROR: libpcap.a was not found"
-            exit 1
-          fi
-
-          if [[ -z "$LIBPCRE2_A" ]]; then
-            echo "ERROR: libpcre2-8.a was not found"
-            exit 1
-          fi
-
-          echo "LIBPCAP_DIR=$(dirname "$LIBPCAP_A")" >> "$GITHUB_ENV"
-          echo "LIBPCRE2_DIR=$(dirname "$LIBPCRE2_A")" >> "$GITHUB_ENV"
-
-          echo "LIBPCAP_DIR=$(dirname "$LIBPCAP_A")"
-          echo "LIBPCRE2_DIR=$(dirname "$LIBPCRE2_A")"
-
       - name: Configure Nmap
         shell: bash
         run: |
           set -euo pipefail
 
+          # These flags are intentionally limited to the Nmap configure step.
+          # Do not export PCRE2-specific library paths globally, because Nmap
+          # builds its bundled PCRE2 internally.
           export CPPFLAGS="\
           -I$PWD/libpcap \
-          -I$PWD/libpcre \
-          -I$PWD/libpcre/src \
-          -I$PWD/boringssl/include \
-          -DPCRE2_STATIC \
-          -DPCRE2_CODE_UNIT_WIDTH=8"
+          -I$PWD/boringssl/include"
 
           export LDFLAGS="\
-          -L$LIBPCAP_DIR \
-          -L$LIBPCRE2_DIR \
+          -L$PWD/libpcap \
+          -L$PWD/libpcap/.libs \
           -L$PWD/boringssl/lib \
           -static-libstdc++"
-
-          export LIBS="\
-          -lpcre2-8 \
-          -lssl \
-          -lcrypto \
-          -lz \
-          -ldl"
 
           ./configure \
             --host=aarch64-linux-android \
@@ -304,13 +213,14 @@ jobs:
             --disable-nmap-update \
             --without-liblua \
             --without-libssh2 \
+            --disable-ncat \
+            --disable-nping \
             CC="$CC" \
             CXX="$CXX" \
             AR="$AR" \
             RANLIB="$RANLIB" \
             CPPFLAGS="$CPPFLAGS" \
             LDFLAGS="$LDFLAGS" \
-            LIBS="$LIBS" \
             ac_cv_lib_crypto_BIO_int_ctrl=yes \
             ac_cv_lib_ssl_SSL_new=yes \
             ac_cv_func_EVP_sha256=yes
@@ -322,51 +232,36 @@ jobs:
 
           make -j"$(nproc)" V=1
 
-      - name: Verify generated binaries
+      - name: Verify Nmap binary
         shell: bash
         run: |
           set -euo pipefail
 
-          binaries=(
-            "nmap"
-            "ncat/ncat"
-            "nping/nping"
-          )
+          if [[ ! -f nmap ]]; then
+            echo "ERROR: nmap was not generated"
+            exit 1
+          fi
 
-          for binary in "${binaries[@]}"; do
-            echo
-            echo "========================================"
-            echo "Verifying: $binary"
-            echo "========================================"
+          file nmap
 
-            if [[ ! -f "$binary" ]]; then
-              echo "ERROR: $binary does not exist"
-              exit 1
-            fi
+          echo "--- Dynamic dependencies ---"
+          readelf -d nmap | grep NEEDED || true
 
-            file "$binary"
+          if readelf -d nmap | grep -q "libc++_shared.so"; then
+            echo "ERROR: nmap depends on libc++_shared.so"
+            exit 1
+          fi
 
-            echo "--- Dynamic dependencies ---"
-            readelf -d "$binary" | grep NEEDED || true
+          echo "--- Architecture ---"
+          "$TOOLCHAIN/bin/llvm-readelf" -h nmap | \
+            grep -E "Class:|Machine:|OS/ABI:" || true
 
-            if readelf -d "$binary" | grep -q "libc++_shared.so"; then
-              echo "ERROR: $binary depends on libc++_shared.so"
-              exit 1
-            fi
-
-            echo "--- Architecture ---"
-            "$TOOLCHAIN/bin/llvm-readelf" -h "$binary" | \
-              grep -E "Class:|Machine:|OS/ABI:" || true
-          done
-
-      - name: Strip binaries
+      - name: Strip Nmap binary
         shell: bash
         run: |
           set -euo pipefail
 
           "$STRIP" nmap
-          "$STRIP" ncat/ncat
-          "$STRIP" nping/nping
 
       - name: Prepare release package
         shell: bash
@@ -379,36 +274,21 @@ jobs:
           mkdir -p release
 
           cp nmap release/nmap
-          cp ncat/ncat release/ncat
-          cp nping/nping release/nping
+          chmod 755 release/nmap
 
-          chmod 755 \
-            release/nmap \
-            release/ncat \
-            release/nping
-
-          echo "Release binaries:"
-          file \
-            release/nmap \
-            release/ncat \
-            release/nping
+          file release/nmap
 
           cd release
 
           zip -9 \
             "nmap-android-${RELEASE_TAG}.zip" \
-            nmap \
-            ncat \
-            nping
+            nmap
 
           sha256sum \
             nmap \
-            ncat \
-            nping \
             "nmap-android-${RELEASE_TAG}.zip" \
             > SHA256SUMS
 
-          echo "Release package contents:"
           ls -lh
 
       - name: Upload build artifacts
