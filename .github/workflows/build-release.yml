@@ -8,19 +8,20 @@ on:
 
 permissions:
   contents: write
-  actions: write
 
 env:
   RELEASE_TAG: v1.0.0
   ANDROID_API: "24"
   ANDROID_ABI: arm64-v8a
+  NDK_VERSION: r27b
 
 jobs:
   build:
+    name: Build Android binaries
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout source code
         uses: actions/checkout@v4
 
       - name: Install build dependencies
@@ -45,9 +46,10 @@ jobs:
             wget \
             unzip \
             file \
-            binutils
+            binutils \
+            zip
 
-      - name: Install Android NDK r27b
+      - name: Install Android NDK
         shell: bash
         run: |
           set -euo pipefail
@@ -55,12 +57,13 @@ jobs:
           cd "$HOME"
 
           wget -q \
-            https://dl.google.com/android/repository/android-ndk-r27b-linux.zip
+            "https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip"
 
-          unzip -q android-ndk-r27b-linux.zip
+          unzip -q \
+            "android-ndk-${NDK_VERSION}-linux.zip"
 
-          echo "NDK_HOME=$HOME/android-ndk-r27b" >> "$GITHUB_ENV"
-          echo "TOOLCHAIN=$HOME/android-ndk-r27b/toolchains/llvm/prebuilt/linux-x86_64" >> "$GITHUB_ENV"
+          echo "NDK_HOME=$HOME/android-ndk-${NDK_VERSION}" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN=$HOME/android-ndk-${NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64" >> "$GITHUB_ENV"
 
       - name: Configure Android toolchain
         shell: bash
@@ -75,14 +78,19 @@ jobs:
           echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> "$GITHUB_ENV"
           echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> "$GITHUB_ENV"
 
-      - name: Show toolchain versions
+      - name: Verify Android toolchain
         shell: bash
         run: |
           set -euo pipefail
 
+          command -v "$CC"
+          command -v "$CXX"
+          command -v "$AR"
+          command -v "$RANLIB"
+          command -v "$STRIP"
+
           "$CC" --version
           "$CXX" --version
-          cmake --version
 
       - name: Build BoringSSL
         shell: bash
@@ -107,22 +115,26 @@ jobs:
             --target ssl crypto \
             --parallel "$(nproc)"
 
-          echo "Generated BoringSSL files:"
+          echo "Searching for BoringSSL static libraries..."
 
-          find boringssl/build \
+          find "$PWD/boringssl/build" \
             -type f \
             \( -name "libssl.a" -o -name "libcrypto.a" \) \
             -print
 
-          SSL_LIB="$(find "$PWD/boringssl/build" \
-            -type f \
-            -name "libssl.a" \
-            -print -quit)"
+          SSL_LIB="$(
+            find "$PWD/boringssl/build" \
+              -type f \
+              -name "libssl.a" \
+              -print -quit
+          )"
 
-          CRYPTO_LIB="$(find "$PWD/boringssl/build" \
-            -type f \
-            -name "libcrypto.a" \
-            -print -quit)"
+          CRYPTO_LIB="$(
+            find "$PWD/boringssl/build" \
+              -type f \
+              -name "libcrypto.a" \
+              -print -quit
+          )"
 
           if [[ -z "$SSL_LIB" ]]; then
             echo "ERROR: libssl.a was not found"
@@ -139,7 +151,7 @@ jobs:
           cp "$SSL_LIB" boringssl/lib/libssl.a
           cp "$CRYPTO_LIB" boringssl/lib/libcrypto.a
 
-          echo "Prepared BoringSSL libraries:"
+          echo "BoringSSL libraries prepared:"
           ls -lh boringssl/lib
 
       - name: Build libpcap
@@ -149,23 +161,34 @@ jobs:
 
           cd libpcap
 
+          make distclean 2>/dev/null || true
+          rm -f config.cache
+
           ./configure \
             --host=aarch64-linux-android \
-            --enable-static \
-            --disable-shared \
             --without-libnl \
             CC="$CC" \
             AR="$AR" \
             RANLIB="$RANLIB"
 
-          make clean || true
           make -j"$(nproc)"
 
-          if [[ ! -f ".libs/libpcap.a" ]]; then
+          echo "Searching for libpcap.a..."
+
+          LIBPCAP_A="$(
+            find "$PWD" \
+              -type f \
+              -name "libpcap.a" \
+              -print -quit
+          )"
+
+          if [[ -z "$LIBPCAP_A" ]]; then
             echo "ERROR: libpcap.a was not found"
-            find . -name "libpcap.a" -print
+            find "$PWD" -type f -name "*.a" -print
             exit 1
           fi
+
+          echo "Found libpcap: $LIBPCAP_A"
 
           cd ..
 
@@ -176,6 +199,9 @@ jobs:
 
           cd libpcre
 
+          make distclean 2>/dev/null || true
+          rm -f config.cache
+
           ./configure \
             --host=aarch64-linux-android \
             --enable-static \
@@ -184,16 +210,61 @@ jobs:
             AR="$AR" \
             RANLIB="$RANLIB"
 
-          make clean || true
           make -j"$(nproc)"
 
-          if [[ ! -f ".libs/libpcre.a" ]]; then
+          echo "Searching for libpcre.a..."
+
+          LIBPCRE_A="$(
+            find "$PWD" \
+              -type f \
+              -name "libpcre.a" \
+              -print -quit
+          )"
+
+          if [[ -z "$LIBPCRE_A" ]]; then
             echo "ERROR: libpcre.a was not found"
-            find . -name "libpcre.a" -print
+            find "$PWD" -type f -name "*.a" -print
             exit 1
           fi
 
+          echo "Found libpcre: $LIBPCRE_A"
+
           cd ..
+
+      - name: Prepare dependency paths
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          LIBPCAP_A="$(
+            find "$PWD/libpcap" \
+              -type f \
+              -name "libpcap.a" \
+              -print -quit
+          )"
+
+          LIBPCRE_A="$(
+            find "$PWD/libpcre" \
+              -type f \
+              -name "libpcre.a" \
+              -print -quit
+          )"
+
+          if [[ -z "$LIBPCAP_A" ]]; then
+            echo "ERROR: libpcap.a was not found"
+            exit 1
+          fi
+
+          if [[ -z "$LIBPCRE_A" ]]; then
+            echo "ERROR: libpcre.a was not found"
+            exit 1
+          fi
+
+          echo "LIBPCAP_DIR=$(dirname "$LIBPCAP_A")" >> "$GITHUB_ENV"
+          echo "LIBPCRE_DIR=$(dirname "$LIBPCRE_A")" >> "$GITHUB_ENV"
+
+          echo "LIBPCAP_DIR=$(dirname "$LIBPCAP_A")"
+          echo "LIBPCRE_DIR=$(dirname "$LIBPCRE_A")"
 
       - name: Configure Nmap
         shell: bash
@@ -206,13 +277,9 @@ jobs:
           -I$PWD/libpcre/src \
           -I$PWD/boringssl/include"
 
-          # Do not use -lc++.
-          #
-          # -static-libstdc++ links the C++ runtime statically
-          # and prevents a dependency on libc++_shared.so.
           export LDFLAGS="\
-          -L$PWD/libpcap/.libs \
-          -L$PWD/libpcre/.libs \
+          -L$LIBPCAP_DIR \
+          -L$LIBPCRE_DIR \
           -L$PWD/boringssl/lib \
           -static-libstdc++"
 
@@ -270,7 +337,7 @@ jobs:
             readelf -d "$binary" | grep NEEDED || true
 
             if readelf -d "$binary" | grep -q "libc++_shared.so"; then
-              echo "ERROR: $binary still depends on libc++_shared.so"
+              echo "ERROR: $binary depends on libc++_shared.so"
               exit 1
             fi
 
@@ -305,6 +372,7 @@ jobs:
             release/ncat \
             release/nping
 
+          echo "Release binaries:"
           file \
             release/nmap \
             release/ncat \
@@ -325,6 +393,7 @@ jobs:
             "nmap-android-${RELEASE_TAG}.zip" \
             > SHA256SUMS
 
+          echo "Release package contents:"
           ls -lh
 
       - name: Upload build artifacts
@@ -335,6 +404,7 @@ jobs:
           retention-days: 30
 
   release:
+    name: Create GitHub release
     needs: build
     runs-on: ubuntu-latest
 
@@ -345,7 +415,7 @@ jobs:
           name: nmap-android-binaries
           path: release/
 
-      - name: Create GitHub Release
+      - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
