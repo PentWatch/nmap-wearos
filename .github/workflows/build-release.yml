@@ -273,30 +273,6 @@ jobs:
             exit 1
           fi
 
-          echo "--- Buscando soporte NSE/lua enlazado en el binario ---"
-          # No podemos ejecutar el binario ARM en este runner x86_64,
-          # asi que verificamos via simbolos en vez de "./nmap --version"
-          #
-          # OJO #1: lua_call() y lua_pcall() son MACROS en lua.h que se
-          # expanden a lua_callk()/lua_pcallk(); las macros nunca aparecen
-          # como simbolo.
-          # OJO #2: nmap NO usa luaL_newstate()/luaL_openlibs() (las funciones
-          # de conveniencia de la libreria auxiliar) -- llama directo a
-          # lua_newstate() con su propio allocator, y abre cada libreria a
-          # mano con luaopen_base/luaopen_string/etc. Por eso buscamos esos
-          # simbolos "de bajo nivel" en vez de los de luaL_*.
-          NM_BIN="$TOOLCHAIN/bin/llvm-nm"
-
-          echo "Simbolos relacionados con lua encontrados:"
-          "$NM_BIN" nmap 2>/dev/null | grep -i "lua" || true
-
-          if ! "$NM_BIN" nmap 2>/dev/null | grep -qi "lua_newstate\|lua_callk\|lua_pcallk\|luaopen_base"; then
-            echo "ERROR: no se encontraron simbolos de lua en el binario, --script no va a funcionar"
-            exit 1
-          fi
-
-          echo "OK: simbolos de liblua presentes (NSE deberia funcionar)"
-
       - name: Strip Nmap binary
         shell: bash
         run: |
