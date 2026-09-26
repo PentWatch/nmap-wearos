@@ -286,46 +286,52 @@ jobs:
           set -euo pipefail
 
           RELEASE_TAG="${GITHUB_REF_NAME:-manual-${GITHUB_RUN_NUMBER}}"
+          ZIP_NAME="nmap-android-armeabi-v7a-${RELEASE_TAG}.zip"
 
-          rm -rf release
+          # Armamos el contenido del paquete en un directorio de staging
+          # APARTE de "release/". Asi "release/" termina con SOLO el zip
+          # final + SHA256SUMS, y no con copias sueltas de nmap/share que
+          # GitHub Actions volveria a empaquetar (duplicado) al generar el
+          # zip de descarga del artifact.
+          rm -rf staging release
+          mkdir -p staging/share/nmap
           mkdir -p release
-          mkdir -p release/share/nmap
 
-          cp nmap release/nmap
-          chmod 755 release/nmap
+          cp nmap staging/nmap
+          chmod 755 staging/nmap
 
           # Archivos de datos que nmap busca en runtime (NMAPDATADIR).
           # Sin esto falla "Unable to find nmap-services", NSE no arranca, etc.
-          cp nmap-services release/share/nmap/
-          cp nmap-rpc release/share/nmap/
-          cp nmap-os-db release/share/nmap/
-          cp nmap-service-probes release/share/nmap/
-          cp nmap-protocols release/share/nmap/
-          cp nmap-mac-prefixes release/share/nmap/
-          cp nse_main.lua release/share/nmap/
+          cp nmap-services staging/share/nmap/
+          cp nmap-rpc staging/share/nmap/
+          cp nmap-os-db staging/share/nmap/
+          cp nmap-service-probes staging/share/nmap/
+          cp nmap-protocols staging/share/nmap/
+          cp nmap-mac-prefixes staging/share/nmap/
+          cp nse_main.lua staging/share/nmap/
 
-          mkdir -p release/share/nmap/scripts
-          cp scripts/script.db release/share/nmap/scripts/
-          cp scripts/*.nse release/share/nmap/scripts/
+          mkdir -p staging/share/nmap/scripts
+          cp scripts/script.db staging/share/nmap/scripts/
+          cp scripts/*.nse staging/share/nmap/scripts/
 
-          mkdir -p release/share/nmap/nselib/data
-          cp nselib/*.lua release/share/nmap/nselib/
-          cp nselib/*.luadoc release/share/nmap/nselib/ 2>/dev/null || true
-          cp -r nselib/data/. release/share/nmap/nselib/data/
+          mkdir -p staging/share/nmap/nselib/data
+          cp nselib/*.lua staging/share/nmap/nselib/
+          cp nselib/*.luadoc staging/share/nmap/nselib/ 2>/dev/null || true
+          cp -r nselib/data/. staging/share/nmap/nselib/data/
 
-          cd release
+          (
+            cd staging
+            zip -9 -r "../release/${ZIP_NAME}" nmap share
+          )
 
-          zip -9 -r \
-            "nmap-android-armeabi-v7a-${RELEASE_TAG}.zip" \
-            nmap share
+          (
+            cd release
+            sha256sum "${ZIP_NAME}" > SHA256SUMS
+          )
 
-          sha256sum \
-            nmap \
-            "nmap-android-armeabi-v7a-${RELEASE_TAG}.zip" \
-            > SHA256SUMS
-
-          file nmap
-          ls -lhR
+          file staging/nmap
+          echo "--- Contenido final de release/ (esto es lo que sube el artifact) ---"
+          ls -lh release
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
