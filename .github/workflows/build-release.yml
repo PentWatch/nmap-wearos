@@ -218,7 +218,7 @@ jobs:
             --disable-nping \
             --disable-ndiff \
             --disable-nmap-update \
-            --without-liblua \
+            --with-liblua=included \
             --without-libssh2 \
             CC="$CC" \
             CXX="$CXX" \
@@ -272,6 +272,18 @@ jobs:
             echo "ERROR: el binario referencia /system/bin/linker64 (es de 64-bit)"
             exit 1
           fi
+
+          echo "--- Buscando soporte NSE/lua enlazado en el binario ---"
+          # No podemos ejecutar el binario ARM en este runner x86_64,
+          # asi que verificamos via simbolos en vez de "./nmap --version"
+          NM_BIN="$TOOLCHAIN/bin/llvm-nm"
+
+          if ! "$NM_BIN" nmap 2>/dev/null | grep -qi "lua_call\|luaL_newstate"; then
+            echo "ERROR: no se encontraron simbolos de lua en el binario, --script no va a funcionar"
+            exit 1
+          fi
+
+          echo "OK: simbolos de liblua presentes (NSE deberia funcionar)"
 
       - name: Strip Nmap binary
         shell: bash
