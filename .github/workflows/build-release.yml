@@ -11,7 +11,11 @@ permissions:
 
 env:
   ANDROID_API: "24"
-  ANDROID_ABI: arm64-v8a
+  ANDROID_ABI: armeabi-v7a
+  # Triple usado por el propio compilador clang del NDK (prefijo de los binarios)
+  NDK_TARGET: armv7a-linux-androideabi
+  # Triple GNU "canonico" que esperan los scripts autoconf (--host=...)
+  GNU_HOST_TRIPLE: arm-linux-androideabi
   NDK_VERSION: r27b
 
 jobs:
@@ -71,8 +75,10 @@ jobs:
 
           echo "PATH=$TOOLCHAIN/bin:$PATH" >> "$GITHUB_ENV"
 
-          echo "CC=$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang" >> "$GITHUB_ENV"
-          echo "CXX=$TOOLCHAIN/bin/aarch64-linux-android${ANDROID_API}-clang++" >> "$GITHUB_ENV"
+          # OJO: para armeabi-v7a el clang del NDK usa el prefijo NDK_TARGET
+          # (armv7a-linux-androideabi<API>-clang), NO aarch64-linux-android<API>-clang
+          echo "CC=$TOOLCHAIN/bin/${NDK_TARGET}${ANDROID_API}-clang" >> "$GITHUB_ENV"
+          echo "CXX=$TOOLCHAIN/bin/${NDK_TARGET}${ANDROID_API}-clang++" >> "$GITHUB_ENV"
           echo "AR=$TOOLCHAIN/bin/llvm-ar" >> "$GITHUB_ENV"
           echo "RANLIB=$TOOLCHAIN/bin/llvm-ranlib" >> "$GITHUB_ENV"
           echo "STRIP=$TOOLCHAIN/bin/llvm-strip" >> "$GITHUB_ENV"
@@ -148,7 +154,7 @@ jobs:
           rm -f config.cache
 
           ./configure \
-            --host=aarch64-linux-android \
+            --host="$GNU_HOST_TRIPLE" \
             --without-libnl \
             CC="$CC" \
             AR="$AR" \
@@ -203,7 +209,7 @@ jobs:
           -static-libstdc++"
 
           ./configure \
-            --host=aarch64-linux-android \
+            --host="$GNU_HOST_TRIPLE" \
             --with-libpcap=included \
             --with-libpcre=included \
             --with-openssl="$PWD/boringssl" \
@@ -255,6 +261,18 @@ jobs:
           "$TOOLCHAIN/bin/llvm-readelf" -h nmap | \
             grep -E "Class:|Machine:|OS/ABI:" || true
 
+          # Chequeo extra: debe ser 32-bit ARM, y NO debe requerir linker64
+          if ! file nmap | grep -qi "32-bit.*ARM"; then
+            echo "ERROR: el binario no es 32-bit ARM (armeabi-v7a)"
+            file nmap
+            exit 1
+          fi
+
+          if readelf -l nmap 2>/dev/null | grep -q "linker64"; then
+            echo "ERROR: el binario referencia /system/bin/linker64 (es de 64-bit)"
+            exit 1
+          fi
+
       - name: Strip Nmap binary
         shell: bash
         run: |
@@ -278,12 +296,12 @@ jobs:
           cd release
 
           zip -9 \
-            "nmap-android-${RELEASE_TAG}.zip" \
+            "nmap-android-armeabi-v7a-${RELEASE_TAG}.zip" \
             nmap
 
           sha256sum \
             nmap \
-            "nmap-android-${RELEASE_TAG}.zip" \
+            "nmap-android-armeabi-v7a-${RELEASE_TAG}.zip" \
             > SHA256SUMS
 
           file nmap
@@ -292,7 +310,7 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: nmap-android-binaries
+          name: nmap-android-armeabi-v7a-binaries
           path: release/
           retention-days: 30
 
@@ -305,7 +323,7 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: nmap-android-binaries
+          name: nmap-android-armeabi-v7a-binaries
           path: release/
 
       - name: Create GitHub release
