@@ -276,9 +276,18 @@ jobs:
           echo "--- Buscando soporte NSE/lua enlazado en el binario ---"
           # No podemos ejecutar el binario ARM en este runner x86_64,
           # asi que verificamos via simbolos en vez de "./nmap --version"
+          #
+          # OJO: lua_call() y lua_pcall() son MACROS en lua.h (se expanden a
+          # lua_callk()/lua_pcallk()), no funciones reales, asi que NUNCA
+          # aparecen como simbolo en el binario. Buscamos las funciones C
+          # reales que si quedan como simbolos: luaL_newstate, luaL_openlibs
+          # y las variantes _k a las que esos macros se expanden.
           NM_BIN="$TOOLCHAIN/bin/llvm-nm"
 
-          if ! "$NM_BIN" nmap 2>/dev/null | grep -qi "lua_call\|luaL_newstate"; then
+          echo "Simbolos relacionados con lua encontrados:"
+          "$NM_BIN" nmap 2>/dev/null | grep -i "lua" || true
+
+          if ! "$NM_BIN" nmap 2>/dev/null | grep -qi "luaL_newstate\|luaL_openlibs\|lua_callk\|lua_pcallk"; then
             echo "ERROR: no se encontraron simbolos de lua en el binario, --script no va a funcionar"
             exit 1
           fi
