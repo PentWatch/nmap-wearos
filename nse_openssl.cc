@@ -347,6 +347,9 @@ struct enumerator_data {
   int index;
 };
 
+#ifndef OPENSSL_IS_BORINGSSL
+/* BoringSSL no implementa la API legada OBJ_NAME_do_all_sorted() / OBJ_NAME,
+ * asi que esta ruta de enumeracion solo se compila contra OpenSSL real. */
 static void enumerate_algorithms( const OBJ_NAME * name, void * arg )
 {
   struct enumerator_data* data = (struct enumerator_data *) arg;
@@ -354,9 +357,18 @@ static void enumerate_algorithms( const OBJ_NAME * name, void * arg )
   lua_rawseti( data->L, -2, data->index );
   data->index++;
 }
+#endif
 
 static int l_supported_digests(lua_State *L) /** supported_digests() */
 {
+#ifdef OPENSSL_IS_BORINGSSL
+  /* BoringSSL no expone OBJ_NAME_do_all_sorted(), asi que no podemos
+   * enumerar los digests registrados dinamicamente. Devolvemos una tabla
+   * vacia en vez de fallar el link; los scripts que dependan de esta
+   * lista deberan usar nombres de algoritmo explicitos con openssl.digest(). */
+  lua_newtable( L );
+  return 1;
+#else
   enumerator_data data;
   data.L = L;
   data.index = 1;
@@ -365,10 +377,16 @@ static int l_supported_digests(lua_State *L) /** supported_digests() */
   OBJ_NAME_do_all_sorted( OBJ_NAME_TYPE_MD_METH,enumerate_algorithms, &data );
 
   return 1;
+#endif
 }
 
 static int l_supported_ciphers(lua_State *L) /** supported_ciphers() */
 {
+#ifdef OPENSSL_IS_BORINGSSL
+  /* Ver comentario en l_supported_digests(). */
+  lua_newtable( L );
+  return 1;
+#else
   enumerator_data data;
   data.L = L;
   data.index = 1;
@@ -377,6 +395,7 @@ static int l_supported_ciphers(lua_State *L) /** supported_ciphers() */
   OBJ_NAME_do_all_sorted( OBJ_NAME_TYPE_CIPHER_METH,enumerate_algorithms, &data );
 
   return 1;
+#endif
 }
 
 static int l_encrypt(lua_State *L) /** encrypt( string algorithm, string key, string iv, string data, bool padding = false ) */
