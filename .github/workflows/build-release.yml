@@ -289,15 +289,35 @@ jobs:
 
           rm -rf release
           mkdir -p release
+          mkdir -p release/share/nmap
 
           cp nmap release/nmap
           chmod 755 release/nmap
 
+          # Archivos de datos que nmap busca en runtime (NMAPDATADIR).
+          # Sin esto falla "Unable to find nmap-services", NSE no arranca, etc.
+          cp nmap-services release/share/nmap/
+          cp nmap-rpc release/share/nmap/
+          cp nmap-os-db release/share/nmap/
+          cp nmap-service-probes release/share/nmap/
+          cp nmap-protocols release/share/nmap/
+          cp nmap-mac-prefixes release/share/nmap/
+          cp nse_main.lua release/share/nmap/
+
+          mkdir -p release/share/nmap/scripts
+          cp scripts/script.db release/share/nmap/scripts/
+          cp scripts/*.nse release/share/nmap/scripts/
+
+          mkdir -p release/share/nmap/nselib/data
+          cp nselib/*.lua release/share/nmap/nselib/
+          cp nselib/*.luadoc release/share/nmap/nselib/ 2>/dev/null || true
+          cp -r nselib/data/. release/share/nmap/nselib/data/
+
           cd release
 
-          zip -9 \
+          zip -9 -r \
             "nmap-android-armeabi-v7a-${RELEASE_TAG}.zip" \
-            nmap
+            nmap share
 
           sha256sum \
             nmap \
@@ -305,7 +325,7 @@ jobs:
             > SHA256SUMS
 
           file nmap
-          ls -lh
+          ls -lhR
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
